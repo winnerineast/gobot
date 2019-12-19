@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -144,19 +145,18 @@ type FlightData struct {
 	DroneFlyTimeLeft         int16
 	DroneHover               bool
 	EmOpen                   bool
-	EmSky                    bool
-	EmGround                 bool
+	Flying                   bool
+	OnGround                 bool
 	EastSpeed                int16
 	ElectricalMachineryState int16
 	FactoryMode              bool
 	FlyMode                  int8
-	FlySpeed                 int16
 	FlyTime                  int16
 	FrontIn                  bool
 	FrontLSC                 bool
 	FrontOut                 bool
 	GravityState             bool
-	GroundSpeed              int16
+	VerticalSpeed            int16
 	Height                   int16
 	ImuCalibrationState      int8
 	ImuState                 bool
@@ -166,10 +166,8 @@ type FlightData struct {
 	PowerState               bool
 	PressureState            bool
 	SmartVideoExitMode       int16
-	TemperatureHeight        bool
+	TemperatureHigh          bool
 	ThrowFlyTimer            int8
-	WifiDisturb              int8
-	WifiStrength             int8
 	WindState                bool
 }
 
@@ -201,7 +199,7 @@ func NewDriver(port string) *Driver {
 	d := &Driver{name: gobot.DefaultName("Tello"),
 		reqAddr:   "192.168.10.1:8889",
 		respPort:  port,
-		videoPort: "6038",
+		videoPort: "11111",
 		Eventer:   gobot.NewEventer(),
 	}
 
@@ -266,7 +264,7 @@ func (d *Driver) Start() error {
 		}
 	}()
 
-	// starts notifications coming from drone to video port normally 6038
+	// starts notifications coming from drone to video port normally 11111
 	d.SendCommand(d.connectionString())
 
 	// send stick commands
@@ -420,6 +418,103 @@ func (d *Driver) Rate() (err error) {
 	return
 }
 
+// bound is a naive implementation that returns the smaller of x or y.
+func bound(x, y float32) float32 {
+	if x < -y {
+		return -y
+	}
+	if x > y {
+		return y
+	}
+	return x
+}
+
+// Vector returns the current motion vector.
+// Values are from 0 to 1.
+// x, y, z denote forward, side and vertical translation,
+// and psi  yaw (rotation around the z-axis).
+func (d *Driver) Vector() (x, y, z, psi float32) {
+	return d.ry, d.rx, d.ly, d.lx
+}
+
+// AddVector adds to the current motion vector.
+// Pass values from 0 to 1.
+// See Vector() for the frame of reference.
+func (d *Driver) AddVector(x, y, z, psi float32) error {
+	d.cmdMutex.Lock()
+	defer d.cmdMutex.Unlock()
+
+	d.ry = bound(d.ry+x, 1)
+	d.rx = bound(d.rx+y, 1)
+	d.ly = bound(d.ly+z, 1)
+	d.lx = bound(d.lx+psi, 1)
+
+	return nil
+}
+
+// SetVector sets the current motion vector.
+// Pass values from 0 to 1.
+// See Vector() for the frame of reference.
+func (d *Driver) SetVector(x, y, z, psi float32) error {
+	d.cmdMutex.Lock()
+	defer d.cmdMutex.Unlock()
+
+	d.ry = x
+	d.rx = y
+	d.ly = z
+	d.lx = psi
+
+	return nil
+}
+
+// SetX sets the x component of the current motion vector
+// Pass values from 0 to 1.
+// See Vector() for the frame of reference.
+func (d *Driver) SetX(x float32) error {
+	d.cmdMutex.Lock()
+	defer d.cmdMutex.Unlock()
+
+	d.ry = x
+
+	return nil
+}
+
+// SetY sets the y component of the current motion vector
+// Pass values from 0 to 1.
+// See Vector() for the frame of reference.
+func (d *Driver) SetY(y float32) error {
+	d.cmdMutex.Lock()
+	defer d.cmdMutex.Unlock()
+
+	d.rx = y
+
+	return nil
+}
+
+// SetZ sets the z component of the current motion vector
+// Pass values from 0 to 1.
+// See Vector() for the frame of reference.
+func (d *Driver) SetZ(z float32) error {
+	d.cmdMutex.Lock()
+	defer d.cmdMutex.Unlock()
+
+	d.ly = z
+
+	return nil
+}
+
+// SetPsi sets the psi component (yaw) of the current motion vector
+// Pass values from 0 to 1.
+// See Vector() for the frame of reference.
+func (d *Driver) SetPsi(psi float32) error {
+	d.cmdMutex.Lock()
+	defer d.cmdMutex.Unlock()
+
+	d.lx = psi
+
+	return nil
+}
+
 // Up tells the drone to ascend. Pass in an int from 0-100.
 func (d *Driver) Up(val int) error {
 	d.cmdMutex.Lock()
@@ -500,6 +595,7 @@ func (d *Driver) Hover() {
 
 	d.rx = float32(0)
 	d.ry = float32(0)
+	d.lx = float32(0)
 	d.ly = float32(0)
 }
 
@@ -583,7 +679,7 @@ func (d *Driver) ParseFlightData(b []byte) (fd *FlightData, err error) {
 	if err != nil {
 		return
 	}
-	err = binary.Read(buf, binary.LittleEndian, &fd.GroundSpeed)
+	err = binary.Read(buf, binary.LittleEndian, &fd.VerticalSpeed)
 	if err != nil {
 		return
 	}
@@ -625,8 +721,8 @@ func (d *Driver) ParseFlightData(b []byte) (fd *FlightData, err error) {
 	if err != nil {
 		return
 	}
-	fd.EmSky = (data >> 0 & 0x1) == 1
-	fd.EmGround = (data >> 1 & 0x1) == 1
+	fd.Flying = (data >> 0 & 0x1) == 1
+	fd.OnGround = (data >> 1 & 0x1) == 1
 	fd.EmOpen = (data >> 2 & 0x1) == 1
 	fd.DroneHover = (data >> 3 & 0x1) == 1
 	fd.OutageRecording = (data >> 4 & 0x1) == 1
@@ -665,7 +761,7 @@ func (d *Driver) ParseFlightData(b []byte) (fd *FlightData, err error) {
 	if err != nil {
 		return
 	}
-	fd.TemperatureHeight = (data >> 0 & 0x1) == 1
+	fd.TemperatureHigh = (data >> 0 & 0x1) == 1
 
 	return
 }
@@ -803,7 +899,7 @@ func (d *Driver) handleResponse(r io.Reader) error {
 }
 
 func (d *Driver) processVideo() error {
-	videoPort, err := net.ResolveUDPAddr("udp", ":6038")
+	videoPort, err := net.ResolveUDPAddr("udp", ":11111")
 	if err != nil {
 		return err
 	}
@@ -816,11 +912,12 @@ func (d *Driver) processVideo() error {
 		for {
 			buf := make([]byte, 2048)
 			n, _, err := d.videoConn.ReadFromUDP(buf)
-			d.Publish(d.Event(VideoFrameEvent), buf[2:n])
-
 			if err != nil {
 				fmt.Println("Error: ", err)
+				continue
 			}
+
+			d.Publish(d.Event(VideoFrameEvent), buf[2:n])
 		}
 	}()
 
@@ -846,4 +943,17 @@ func (d *Driver) connectionString() string {
 	binary.LittleEndian.PutUint16(b[:], uint16(x))
 	res := fmt.Sprintf("conn_req:%s", b)
 	return res
+}
+
+func (f *FlightData) AirSpeed() float64 {
+	return math.Sqrt(
+		math.Pow(float64(f.NorthSpeed), 2) +
+			math.Pow(float64(f.EastSpeed), 2) +
+			math.Pow(float64(f.VerticalSpeed), 2))
+}
+
+func (f *FlightData) GroundSpeed() float64 {
+	return math.Sqrt(
+		math.Pow(float64(f.NorthSpeed), 2) +
+			math.Pow(float64(f.EastSpeed), 2))
 }

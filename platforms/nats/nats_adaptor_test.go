@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nats-io/nats"
+	"github.com/nats-io/nats.go"
 	"gobot.io/x/gobot"
 	"gobot.io/x/gobot/gobottest"
 )

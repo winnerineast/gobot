@@ -3,6 +3,8 @@ package up2
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 
 	multierror "github.com/hashicorp/go-multierror"
@@ -10,6 +12,20 @@ import (
 	"gobot.io/x/gobot/drivers/i2c"
 	"gobot.io/x/gobot/drivers/spi"
 	"gobot.io/x/gobot/sysfs"
+)
+
+const (
+	// LEDRed is the built-in red LED.
+	LEDRed = "red"
+
+	// LEDBlue is the built-in blue LED.
+	LEDBlue = "blue"
+
+	// LEDGreen is the built-in green LED.
+	LEDGreen = "green"
+
+	// LEDYellow is the built-in yellow LED.
+	LEDYellow = "yellow"
 )
 
 type sysfsPin struct {
@@ -21,9 +37,10 @@ type sysfsPin struct {
 type Adaptor struct {
 	name               string
 	pinmap             map[string]sysfsPin
+	ledPath            string
 	digitalPins        map[int]*sysfs.DigitalPin
 	pwmPins            map[int]*sysfs.PWMPin
-	i2cBuses           [2]i2c.I2cDevice
+	i2cBuses           [6]i2c.I2cDevice
 	mutex              *sync.Mutex
 	spiDefaultBus      int
 	spiDefaultChip     int
@@ -35,8 +52,9 @@ type Adaptor struct {
 // NewAdaptor creates a UP2 Adaptor
 func NewAdaptor() *Adaptor {
 	c := &Adaptor{
-		name:  gobot.DefaultName("UP2"),
-		mutex: &sync.Mutex{},
+		name:    gobot.DefaultName("UP2"),
+		mutex:   &sync.Mutex{},
+		ledPath: "/sys/class/leds/upboard:%s:/brightness",
 	}
 
 	c.setPins()
@@ -105,6 +123,18 @@ func (c *Adaptor) DigitalRead(pin string) (val int, err error) {
 
 // DigitalWrite writes digital value to the specified pin.
 func (c *Adaptor) DigitalWrite(pin string, val byte) (err error) {
+	// is it one of the built-in LEDs?
+	if pin == LEDRed || pin == LEDBlue || pin == LEDGreen || pin == LEDYellow {
+		pinPath := fmt.Sprintf(c.ledPath, pin)
+		fi, e := sysfs.OpenFile(pinPath, os.O_WRONLY|os.O_APPEND, 0666)
+		defer fi.Close()
+		if e != nil {
+			return e
+		}
+		_, err = fi.WriteString(strconv.Itoa(int(val)))
+		return err
+	}
+	// one of the normal GPIO pins, then
 	sysfsPin, err := c.DigitalPin(pin, sysfs.OUT)
 	if err != nil {
 		return err
@@ -209,12 +239,12 @@ func (c *Adaptor) PWMPin(pin string) (sysfsPin sysfs.PWMPinner, err error) {
 }
 
 // GetConnection returns a connection to a device on a specified bus.
-// Valid bus number is [0..1] which corresponds to /dev/i2c-0 through /dev/i2c-1.
+// Valid bus number is [5..6] which corresponds to /dev/i2c-5 through /dev/i2c-6.
 func (c *Adaptor) GetConnection(address int, bus int) (connection i2c.Connection, err error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if (bus < 0) || (bus > 1) {
+	if (bus < 5) || (bus > 6) {
 		return nil, fmt.Errorf("Bus number %d out of range", bus)
 	}
 	if c.i2cBuses[bus] == nil {
@@ -225,7 +255,7 @@ func (c *Adaptor) GetConnection(address int, bus int) (connection i2c.Connection
 
 // GetDefaultBus returns the default i2c bus for this platform
 func (c *Adaptor) GetDefaultBus() int {
-	return 0
+	return 5
 }
 
 // GetSpiConnection returns an spi connection to a device on a specified bus.

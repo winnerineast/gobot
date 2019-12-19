@@ -39,6 +39,7 @@ func initTestUP2Adaptor() (*Adaptor, *sysfs.MockFilesystem) {
 		"/sys/class/pwm/pwmchip0/pwm0/period",
 		"/sys/class/pwm/pwmchip0/pwm0/duty_cycle",
 		"/sys/class/pwm/pwmchip0/pwm0/polarity",
+		"/sys/class/leds/upboard:green:/brightness",
 	})
 
 	sysfs.SetFilesystem(fs)
@@ -63,6 +64,12 @@ func TestUP2AdaptorDigitalIO(t *testing.T) {
 	i, _ := a.DigitalRead("13")
 	gobottest.Assert(t, i, 1)
 
+	a.DigitalWrite("green", 1)
+	gobottest.Assert(t,
+		fs.Files["/sys/class/leds/upboard:green:/brightness"].Contents,
+		"1",
+	)
+
 	gobottest.Assert(t, a.DigitalWrite("99", 1), errors.New("Not a valid pin"))
 	gobottest.Assert(t, a.Finalize(), nil)
 }
@@ -86,12 +93,12 @@ func TestAdaptorDigitalReadWriteError(t *testing.T) {
 func TestUP2AdaptorI2c(t *testing.T) {
 	a := NewAdaptor()
 	fs := sysfs.NewMockFilesystem([]string{
-		"/dev/i2c-0",
+		"/dev/i2c-5",
 	})
 	sysfs.SetFilesystem(fs)
 	sysfs.SetSyscall(&sysfs.MockSyscall{})
 
-	con, err := a.GetConnection(0xff, 0)
+	con, err := a.GetConnection(0xff, 5)
 	gobottest.Assert(t, err, nil)
 
 	con.Write([]byte{0x00, 0x01})
@@ -175,7 +182,7 @@ func TestUP2AdaptorPwmReadError(t *testing.T) {
 
 func TestUP2I2CDefaultBus(t *testing.T) {
 	a, _ := initTestUP2Adaptor()
-	gobottest.Assert(t, a.GetDefaultBus(), 0)
+	gobottest.Assert(t, a.GetDefaultBus(), 5)
 }
 
 func TestUP2GetConnectionInvalidBus(t *testing.T) {
